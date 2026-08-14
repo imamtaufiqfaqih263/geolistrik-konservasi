@@ -27,6 +27,10 @@
   ============================================================================
 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#1F2937">
 <style>
   :root{
     --paper:#FAFAFA; --ink:#1F2937; --ink-soft:#6B7280; --line:#E5E7EB;
@@ -130,7 +134,55 @@ function classify(r){
   if(r<500) return {label:"Diduga pasir padu / batuan lapuk",color:"#93C5FD"};
   return {label:"Diduga batuan kompak / kering",color:"#6B7280"};
 }
-function interpretLayers(datum){
+
+/* ============================================================
+   PETA GEOLOGI REGIONAL LEMBAR BUTON
+   Sumber: Sikumbang & Sanyoto (1981); Peta Geologi Regional
+   Lembar Buton (N. Sikumbang dkk., 1995) — Pusat Survei Geologi.
+   Rentang tahanan-jenis per formasi bersifat REFERENSI UMUM dari
+   litologi penyusunnya, bukan hasil pengukuran — selalu verifikasi
+   terhadap legenda peta cetak/GIS resminya.
+   ============================================================ */
+var FORMASI_BUTON = [
+  {v:"", label:"— Belum dipilih —"},
+  {v:"aluvium", label:"Aluvium (Qa) — Endapan Permukaan", umur:"Resen",
+    litho:"endapan lepas: pasir, lempung, kerikil", rho:[1,50]},
+  {v:"wapulaka", label:"Formasi Wapulaka (Qpw)", umur:"Plistosen",
+    litho:"batugamping koral, teras terumbu", rho:[50,2000]},
+  {v:"sampolakosa", label:"Formasi Sampolakosa (Tmps)", umur:"Miosen",
+    litho:"batuan napalan, jarang sisipan batupasir", rho:[10,200]},
+  {v:"tondo", label:"Formasi Tondo (Tmtc) + Anggota Batugamping Tondo", umur:"Miosen Akhir–Pliosen",
+    litho:"batupasir kerikilan, konglomerat, sisipan anggota batugamping", rho:[50,800]},
+  {v:"kapantoreh", label:"Kompleks Ultrabasa Kapantoreh", umur:"—",
+    litho:"peridotit, serpentinit (batuan ultrabasa)", rho:[300,5000]},
+  {v:"diorit", label:"Diorit", umur:"—", litho:"batuan intrusi diorit", rho:[300,5000]},
+  {v:"basalt", label:"Basalt", umur:"—", litho:"batuan basal", rho:[200,3000]},
+  {v:"tobelo", label:"Formasi Tobelo (KTt)", umur:"Kapur–Miosen",
+    litho:"kalkarenit/batugamping masif kaya radiolaria", rho:[100,2000]},
+  {v:"rumu", label:"Formasi Rumu (Jr)", umur:"Jura Akhir",
+    litho:"batugamping merah, batulumpur, napal, kalkarenit — CATATAN: umumnya TIDAK dijumpai di Buton Utara", rho:[30,500]},
+  {v:"ogena", label:"Formasi Ogena (Jo)", umur:"Jura Awal",
+    litho:"batugamping pelagis, klastika halus, sebagian bitumen", rho:[20,500]},
+  {v:"winto", label:"Formasi Winto (Trw)", umur:"Trias Akhir",
+    litho:"perselingan serpih, batupasir, konglomerat, sisipan batugamping/batubara", rho:[10,300]},
+  {v:"doole", label:"Formasi Doole", umur:"Trias–Jura",
+    litho:"batuan malihan derajat lemah: kuarsit mikaan, filit, batu sabak", rho:[200,3000]}
+];
+function getFormasi(v){ return FORMASI_BUTON.find(function(f){return f.v===v;}) || FORMASI_BUTON[0]; }
+function crossCheckFormasi(rhoAvg, formasiValue){
+  if(!formasiValue) return null;
+  var f = getFormasi(formasiValue);
+  if(!f.rho) return null;
+  var inRange = rhoAvg >= f.rho[0] && rhoAvg <= f.rho[1];
+  return {
+    match: inRange,
+    text: inRange
+      ? ("Konsisten dengan "+f.label+" ("+f.litho+")")
+      : ("Di luar rentang umum "+f.label+" ("+f.rho[0]+"–"+f.rho[1]+" \u03A9\u00B7m) — indikasi pelapukan, rekahan/zona jenuh air, atau formasi berbeda; perlu verifikasi lapangan")
+  };
+}
+
+function interpretLayers(datum, formasiValue){
   var pts=[];
   datum.forEach(function(d){ var r=rho(d.i,d.v,d.k); if(r!=null) pts.push({ab2:d.ab2,rho:r}); });
   if(pts.length<2) return [];
@@ -145,9 +197,11 @@ function interpretLayers(datum){
   return layers.map(function(s,idx){
     var avg=s.reduce(function(a,b){return a+b.rho;},0)/s.length;
     var c=classify(avg);
-    return {lapisan:idx+1, ab2Min:s[0].ab2, ab2Max:s[s.length-1].ab2, rhoAvg:avg, label:c.label, color:c.color};
+    var cross = crossCheckFormasi(avg, formasiValue);
+    return {lapisan:idx+1, ab2Min:s[0].ab2, ab2Max:s[s.length-1].ab2, rhoAvg:avg, label:c.label, color:c.color, cross:cross};
   });
 }
+
 function esc(str){
   return String(str==null?"":str).replace(/[&<>"']/g, function(c){
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
@@ -240,14 +294,30 @@ function handleAddKabupaten(){
   var slug = slugify(val) || ("kab-"+Date.now());
   var existing = S.index.find(function(k){ return k.slug===slug; });
   if(existing){ S.showAddKab=false; loadKabupaten(slug); return; }
+
+  if(!navigator.onLine){
+    S.index.push({slug:slug, nama:val});
+    queueAction({slug:slug, body:{action:"addKabupaten", slug:slug, nama:val}});
+    S.showAddKab=false;
+    S.activeSlug=slug;
+    S.kabData={nama:val, stations:[]};
+    S.draft=null;
+    renderApp();
+    return;
+  }
   apiPost({action:"addKabupaten", slug:slug, nama:val}).then(function(r){
     if(r && r.ok){
       S.index.push({slug:slug, nama:val});
       S.showAddKab=false;
       loadKabupaten(slug);
     } else {
-      var detail = (r && (r.__error||r.error)) ? (r.__error||r.error) : "tidak ada respons dari server";
-      S.saveStatus = {state:"err", msg:"Gagal menambah kabupaten: "+detail};
+      // Gagal kirim (jaringan/CORS) — tetap buat lokal & antrekan, jangan blokir kerja
+      S.index.push({slug:slug, nama:val});
+      queueAction({slug:slug, body:{action:"addKabupaten", slug:slug, nama:val}});
+      S.showAddKab=false;
+      S.activeSlug=slug;
+      S.kabData={nama:val, stations:[]};
+      S.draft=null;
       renderApp();
     }
   });
@@ -256,7 +326,7 @@ function startNewStation(){
   if(!S.kabData) return;
   var nextNo = S.kabData.stations.length+1;
   S.draft = {
-    id:"st-"+Date.now(), no:padStasiun(nextNo), lokasi:"", x:"", y:"",
+    id:"st-"+Date.now(), no:padStasiun(nextNo), lokasi:"", x:"", y:"", formasi:"",
     tanggal:new Date().toISOString().slice(0,10), arahLintasan:"", pengamat:"", datum:emptyDatum()
   };
   S.gpsStatus=null; S.tab="input"; renderApp();
@@ -320,45 +390,58 @@ function updateGpsUI(){
 
 function saveStation(){
   if(!S.draft || !S.kabData) return;
-  if(!navigator.onLine){
-    S.saveStatus={state:"err",msg:'Tidak ada internet — data BELUM tersimpan. Jangan tutup halaman ini.'};
-    renderApp(); return;
+  var stationToSave = S.draft;
+  var body = {action:"saveStation", slug:S.activeSlug, station:stationToSave};
+
+  // Simpan dulu secara lokal (optimistik) supaya kerja lapangan tidak terhenti
+  var exists = S.kabData.stations.find(function(s){ return s.id===stationToSave.id; });
+  if(exists){
+    S.kabData.stations = S.kabData.stations.map(function(s){ return s.id===stationToSave.id ? stationToSave : s; });
+  } else {
+    S.kabData.stations.push(stationToSave);
   }
+
+  if(!navigator.onLine){
+    stationToSave._pending = true;
+    queueAction({slug:S.activeSlug, body:body});
+    S.saveStatus={state:"ok",msg:"Tersimpan di HP (offline) — akan disinkron otomatis saat online"};
+    S.draft=null;
+    renderApp();
+    setTimeout(function(){ S.saveStatus=null; renderApp(); }, 3000);
+    return;
+  }
+
   S.saveStatus={state:"saving",msg:"Menyimpan..."};
   renderApp();
-  apiPost({action:"saveStation", slug:S.activeSlug, station:S.draft}).then(function(r){
+  apiPost(body).then(function(r){
     if(r && r.ok){
-      var exists = S.kabData.stations.find(function(s){ return s.id===S.draft.id; });
-      if(exists){
-        S.kabData.stations = S.kabData.stations.map(function(s){ return s.id===S.draft.id ? S.draft : s; });
-      } else {
-        S.kabData.stations.push(S.draft);
-      }
+      stationToSave._pending = false;
       S.saveStatus={state:"ok",msg:"Tersimpan"};
       S.draft=null;
       renderApp();
       setTimeout(function(){ S.saveStatus=null; renderApp(); }, 2000);
     } else {
+      // Gagal (jaringan/CORS/dll) — tetap simpan lokal & masukkan antrean, jangan hilang
+      stationToSave._pending = true;
+      queueAction({slug:S.activeSlug, body:body});
       var detail = (r && (r.__error||r.error)) ? (r.__error||r.error) : "tidak ada respons dari server";
-      S.saveStatus={state:"err",msg:"Gagal menyimpan: "+detail};
+      S.saveStatus={state:"err",msg:"Belum berhasil kirim ke server ("+detail+") — data tersimpan di HP, akan dicoba lagi otomatis."};
+      S.draft=null;
       renderApp();
     }
   });
 }
 function deleteStation(id){
   if(!S.kabData) return;
+  S.kabData.stations = S.kabData.stations.filter(function(s){ return s.id!==id; });
+  renderApp();
   if(!navigator.onLine){
-    S.saveStatus={state:"err",msg:"Tidak ada internet — tidak bisa menghapus sekarang."};
-    renderApp(); return;
+    queueAction({slug:S.activeSlug, body:{action:"deleteStation", slug:S.activeSlug, stationId:id}});
+    return;
   }
   apiPost({action:"deleteStation", slug:S.activeSlug, stationId:id}).then(function(r){
-    if(r && r.ok){
-      S.kabData.stations = S.kabData.stations.filter(function(s){ return s.id!==id; });
-      renderApp();
-    } else {
-      var detail = (r && (r.__error||r.error)) ? (r.__error||r.error) : "tidak ada respons dari server";
-      S.saveStatus={state:"err",msg:"Gagal menghapus: "+detail};
-      renderApp();
+    if(!(r && r.ok)){
+      queueAction({slug:S.activeSlug, body:{action:"deleteStation", slug:S.activeSlug, stationId:id}});
     }
   });
 }
@@ -399,13 +482,25 @@ function exportExcel(){
       ["PENGUMPULAN DAN PENGOLAHAN DATA ZONA KONSERVASI AIR TANAH"],
       ["Kabupaten "+S.kabData.nama],[],
       ["No. Stasiun", s.no],["Lokasi", s.lokasi],["Koordinat (X,Y)", s.x+", "+s.y],
-      ["Tanggal", s.tanggal],["Arah Lintasan", s.arahLintasan],["Pengamat", s.pengamat],[],
+      ["Tanggal", s.tanggal],["Arah Lintasan", s.arahLintasan],["Pengamat", s.pengamat],
+      ["Formasi Geologi Regional", getFormasi(s.formasi).label],[],
       ["Nomor Datum","AB/2 (m)","K","MN/2 (m)","I (mA)","V (mV)","R = V/I","\u03C1a (\u03A9\u00B7m)"]
     ];
     s.datum.forEach(function(d){
       rows.push([d.no,d.ab2,d.k,d.mn2,d.i,d.v,
         (d.i&&d.v)?(parseFloat(d.v)/parseFloat(d.i)):"", rho(d.i,d.v,d.k)||""]);
     });
+    var layers = interpretLayers(s.datum, s.formasi);
+    if(layers.length>0){
+      rows.push([]);
+      rows.push(["INTERPRETASI LAPISAN (indikatif, segmentasi kurva sounding)"]);
+      rows.push(["Lapisan","AB/2 min (m)","AB/2 maks (m)","\u03C1a rata-rata (\u03A9\u00B7m)","Indikasi Litologi (Resistivitas)","Referensi Silang Formasi Regional"]);
+      layers.forEach(function(l){
+        rows.push([l.lapisan, l.ab2Min, l.ab2Max, l.rhoAvg.toFixed(1), l.label, l.cross?l.cross.text:"-"]);
+      });
+      rows.push([]);
+      rows.push(["Catatan: bukan pengganti inversi 1D/2D profesional (IP2WIN/Res2DINV). Referensi formasi: Peta Geologi Regional Lembar Buton (Sikumbang & Sanyoto, 1981)."]);
+    }
     var ws = XLSX.utils.aoa_to_sheet(rows);
     XLSX.utils.book_append_sheet(wb, ws, s.no.replace(".","_").slice(0,31));
   });
@@ -479,6 +574,7 @@ function renderApp(){
   html += '</div>';
   app.innerHTML = html;
   attachHandlers();
+  updateQueueBadge();
 }
 
 function renderHeader(){
@@ -506,6 +602,7 @@ function renderHeader(){
           '<button id="btnShowAddKab" class="btn btn-ghost-dark btn-sm">+ Kab/Kota Baru</button>'
         )+
         statusHtml+
+        '<span id="queueBadge" style="font-size:11px;color:#FCA5A5;font-weight:600;"></span>'+
       '</div>'+
     '</div>'+
     '<nav class="tabs">'+
@@ -540,7 +637,9 @@ function renderStationList(){
       html += '<div class="panel station-row" data-edit="'+esc(s.id)+'">'+
         '<div style="display:flex;align-items:center;gap:14px;">'+
           '<div class="station-badge">'+esc(s.no.replace("GL.",""))+'</div>'+
-          '<div><div style="font-weight:600;font-size:14px;">'+esc(s.no)+' — '+esc(s.lokasi||"(lokasi belum diisi)")+'</div>'+
+          '<div><div style="font-weight:600;font-size:14px;">'+esc(s.no)+' — '+esc(s.lokasi||"(lokasi belum diisi)")+
+            (s._pending ? ' <span style="font-size:10px;font-weight:700;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:1px 5px;">belum tersinkron</span>' : '')+
+          '</div>'+
           '<div style="font-size:12px;color:var(--ink-soft);display:flex;gap:12px;margin-top:2px;">'+
             '<span>'+(s.x&&s.y?esc(s.x+", "+s.y):"belum ada koordinat")+'</span>'+
             '<span>'+esc(s.tanggal)+'</span><span>'+filled+'/24 datum terisi</span></div></div>'+
@@ -584,7 +683,11 @@ function renderStationForm(){
       '<div class="field"><label>Tanggal</label><input id="fTanggal" type="date" value="'+esc(d.tanggal)+'"></div>'+
       '<div class="field"><label>Arah Lintasan</label><input id="fArah" value="'+esc(d.arahLintasan)+'" placeholder="mis. Utara - Selatan"></div>'+
       '<div class="field"><label>Pengamat</label><input id="fPengamat" value="'+esc(d.pengamat)+'" placeholder="Nama, gelar"></div>'+
+      '<div class="field"><label>Formasi Geologi Regional (Lembar Buton)</label><select id="fFormasi">'+
+        FORMASI_BUTON.map(function(f){ return '<option value="'+esc(f.v)+'" '+((d.formasi||"")===f.v?"selected":"")+'>'+esc(f.label)+'</option>'; }).join("")+
+      '</select></div>'+
     '</div>'+
+    '<p style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Pilih formasi berdasarkan posisi stasiun pada peta geologi (cek GISTARU/INA Geoportal/peta cetak). Dipakai untuk membandingkan hasil interpretasi resistivitas dengan litologi regional yang diharapkan.</p>'+
     '<div style="margin-top:14px;">'+
       '<label style="display:block;font-size:11px;font-weight:600;color:var(--ink-soft);margin-bottom:4px;text-transform:uppercase;">Koordinat Lokasi</label>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'+
@@ -630,17 +733,22 @@ function renderRekapTab(){
   var activeStation = S.kabData.stations.find(function(s){return s.id===activeId;}) || S.kabData.stations[0];
   var vesData = activeStation.datum.map(function(d){ return {ab2:d.ab2, rhoa:rho(d.i,d.v,d.k)}; })
     .filter(function(p){ return p.rhoa!=null; });
-  var layers = interpretLayers(activeStation.datum);
+  var layers = interpretLayers(activeStation.datum, activeStation.formasi);
   var stationOpts = S.kabData.stations.map(function(s){
     return '<option value="'+esc(s.id)+'" '+(s.id===activeStation.id?"selected":"")+'>'+esc(s.no)+' — '+esc(s.lokasi||"belum ada lokasi")+'</option>';
   }).join("");
+  var activeFormasi = getFormasi(activeStation.formasi);
 
   var layerRows = layers.map(function(l){
-    return '<div style="display:flex;align-items:center;gap:10px;font-size:12px;">'+
+    var crossHtml = l.cross ? (
+      '<div style="font-size:11px;margin-left:20px;margin-top:2px;color:'+(l.cross.match?"var(--good)":"var(--warn)")+';">'+esc(l.cross.text)+'</div>'
+    ) : "";
+    return '<div style="margin-bottom:6px;">'+
+      '<div style="display:flex;align-items:center;gap:10px;font-size:12px;">'+
       '<div style="width:10px;height:10px;border-radius:2px;background:'+l.color+';flex-shrink:0;"></div>'+
       '<span class="mono" style="color:var(--ink-soft);min-width:90px;">AB/2 '+l.ab2Min+'–'+l.ab2Max+' m</span>'+
       '<span class="mono" style="color:var(--ink-soft);min-width:90px;">'+l.rhoAvg.toFixed(1)+' \u03A9\u00B7m</span>'+
-      '<span>'+esc(l.label)+'</span></div>';
+      '<span>'+esc(l.label)+'</span></div>'+crossHtml+'</div>';
   }).join("");
 
   return ''+
@@ -661,9 +769,10 @@ function renderRekapTab(){
     '<div class="field" style="margin-bottom:12px;max-width:260px;"><label>Pilih Stasiun</label><select id="stationChartSelect">'+stationOpts+'</select></div>'+
     (vesData.length>=2 ? (
       svgVesCurve(vesData)+
+      (activeFormasi.v ? '<p style="font-size:12px;margin-top:10px;"><b>Formasi regional stasiun ini:</b> '+esc(activeFormasi.label)+' ('+esc(activeFormasi.umur||"-")+') — '+esc(activeFormasi.litho)+'</p>' : '')+
       '<div style="margin-top:14px;"><div style="font-size:12px;font-weight:600;margin-bottom:6px;">Indikasi Lapisan (segmentasi kurva sounding)</div>'+
       '<div style="display:grid;gap:6px;">'+layerRows+'</div>'+
-      '<p style="font-size:11px;color:var(--warn);margin-top:10px;line-height:1.5;">Catatan: interpretasi ini segmentasi indikatif dari kurva tahanan jenis semu, bukan hasil inversi 1D/2D penuh. Untuk litologi dan kedalaman akuifer definitif, tetap gunakan perangkat lunak inversi standar (IP2WIN, Res2DINV).</p></div>'
+      '<p style="font-size:11px;color:var(--warn);margin-top:10px;line-height:1.5;">Catatan: interpretasi resistivitas ini segmentasi indikatif dari kurva tahanan jenis semu, bukan hasil inversi 1D/2D penuh. Referensi silang formasi mengacu Peta Geologi Regional Lembar Buton (Sikumbang &amp; Sanyoto, 1981) — rentang tahanan-jenis per formasi adalah referensi umum dari litologi, bukan hasil pengukuran; selalu verifikasi terhadap legenda peta cetak/GIS resmi dan inversi standar (IP2WIN, Res2DINV).</p></div>'
     ) : '<p style="color:var(--ink-soft);font-size:13px;">Data I/V pada stasiun ini belum cukup untuk membentuk kurva sounding.</p>')+
   '</div>';
 }
@@ -676,15 +785,18 @@ function renderPrintTab(){
   }).join("");
   var stationBlocks = kd.stations.map(function(s){
     var vesData = s.datum.map(function(d){return {ab2:d.ab2,rhoa:rho(d.i,d.v,d.k)};}).filter(function(p){return p.rhoa!=null;});
-    var layers = interpretLayers(s.datum);
+    var layers = interpretLayers(s.datum, s.formasi);
+    var formasiInfo = getFormasi(s.formasi);
     var layerRows = layers.map(function(l){
-      return '<tr><td>'+l.lapisan+'</td><td>'+l.ab2Min+'–'+l.ab2Max+'</td><td>'+l.rhoAvg.toFixed(1)+'</td><td>'+esc(l.label)+'</td></tr>';
+      var crossText = l.cross ? l.cross.text : "-";
+      return '<tr><td>'+l.lapisan+'</td><td>'+l.ab2Min+'–'+l.ab2Max+'</td><td>'+l.rhoAvg.toFixed(1)+'</td><td>'+esc(l.label)+'</td><td>'+esc(crossText)+'</td></tr>';
     }).join("");
     return '<div style="margin-bottom:28px;page-break-inside:avoid;">'+
       '<h3 style="font-size:14px;margin:16px 0 6px;border-bottom:1px solid #ccc;padding-bottom:4px;">'+esc(s.no)+' — '+esc(s.lokasi||"(lokasi tidak diisi)")+'</h3>'+
-      '<div style="font-size:11px;margin-bottom:6px;color:#444;">Koordinat: '+(s.x&&s.y?esc(s.x+", "+s.y):"-")+' · Tanggal: '+esc(s.tanggal)+' · Arah lintasan: '+esc(s.arahLintasan||"-")+' · Pengamat: '+esc(s.pengamat||"-")+'</div>'+
+      '<div style="font-size:11px;margin-bottom:6px;color:#444;">Koordinat: '+(s.x&&s.y?esc(s.x+", "+s.y):"-")+' · Tanggal: '+esc(s.tanggal)+' · Arah lintasan: '+esc(s.arahLintasan||"-")+' · Pengamat: '+esc(s.pengamat||"-")+
+        (formasiInfo.v ? (' · Formasi regional: '+esc(formasiInfo.label)) : '')+'</div>'+
       (vesData.length>=2 ? '<div style="margin-bottom:8px;">'+svgVesCurve(vesData,560,160)+'</div>' : '')+
-      (layers.length>0 ? '<table class="print-table"><thead><tr><th>Lapisan</th><th>AB/2 (m)</th><th>\u03C1a rata-rata (\u03A9\u00B7m)</th><th>Indikasi Litologi</th></tr></thead><tbody>'+layerRows+'</tbody></table>' : '')+
+      (layers.length>0 ? '<table class="print-table"><thead><tr><th>Lapisan</th><th>AB/2 (m)</th><th>\u03C1a rata-rata (\u03A9\u00B7m)</th><th>Indikasi Litologi (Resistivitas)</th><th>Referensi Silang Formasi Regional</th></tr></thead><tbody>'+layerRows+'</tbody></table>' : '')+
     '</div>';
   }).join("");
 
@@ -762,6 +874,8 @@ function attachHandlers(){
     var field = {fLokasi:"lokasi", fTanggal:"tanggal", fArah:"arahLintasan", fPengamat:"pengamat"}[id];
     el.oninput = function(){ updateDraftField(field, this.value); };
   });
+  var fFormasi = document.getElementById("fFormasi");
+  if(fFormasi) fFormasi.onchange = function(){ updateDraftField("formasi", this.value); };
   var draftX = document.getElementById("draftX");
   if(draftX) draftX.oninput = function(){ updateDraftField("x", this.value); };
   var draftY = document.getElementById("draftY");
@@ -791,6 +905,62 @@ function attachHandlers(){
   var stationChartSelect = document.getElementById("stationChartSelect");
   if(stationChartSelect) stationChartSelect.onchange = function(){ S.selectedStationId=this.value; renderApp(); };
 }
+
+/* ============================================================
+   SERVICE WORKER (mode offline) + ANTREAN SINKRONISASI
+   ============================================================ */
+if("serviceWorker" in navigator){
+  window.addEventListener("load", function(){
+    navigator.serviceWorker.register("sw.js").catch(function(){ /* abaikan jika gagal daftar */ });
+  });
+}
+
+var QUEUE_KEY = "zkat-pending-queue";
+function loadQueue(){
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); } catch(e){ return []; }
+}
+function saveQueue(q){
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch(e){ /* penyimpanan penuh/diblokir — abaikan */ }
+}
+function queueAction(action){
+  var q = loadQueue();
+  q.push(action);
+  saveQueue(q);
+  updateQueueBadge();
+}
+function updateQueueBadge(){
+  var el = document.getElementById("queueBadge");
+  var n = loadQueue().length;
+  if(el) el.textContent = n>0 ? (n+" belum tersinkron") : "";
+}
+var isSyncing = false;
+function trySyncQueue(){
+  if(isSyncing) return;
+  var q = loadQueue();
+  if(q.length===0) return;
+  if(!navigator.onLine) return;
+  isSyncing = true;
+  var next = q[0];
+  apiPost(next.body).then(function(r){
+    var rest = loadQueue().slice(1);
+    if(r && r.ok){
+      saveQueue(rest);
+      if(next.body.action==="saveStation" && S.kabData && S.activeSlug===next.slug){
+        var st = S.kabData.stations.find(function(s){ return s.id===next.body.station.id; });
+        if(st) st._pending = false;
+      }
+      updateQueueBadge();
+      renderApp();
+    } else {
+      // gagal lagi (mungkin masih offline atau server bermasalah) — coba lagi nanti
+      saveQueue(q); // biarkan di antrean
+    }
+    isSyncing = false;
+    if(rest.length>0) setTimeout(trySyncQueue, 1500);
+  }).catch(function(){ isSyncing=false; });
+}
+window.addEventListener("online", function(){ S.isOnline=true; trySyncQueue(); renderApp(); });
+setInterval(trySyncQueue, 20000); // coba sinkron berkala (jaga-jaga event 'online' tidak terpicu)
 
 init();
 </script>
