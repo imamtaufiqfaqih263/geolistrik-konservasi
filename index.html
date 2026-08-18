@@ -552,6 +552,53 @@ function updateDatumField(no, field, val){
   if(cnt) cnt.textContent = filled+"/24 datum terisi";
 }
 
+function backfillFormasiAll(){
+  if(!S.kabData) return;
+  var candidates = S.kabData.stations.filter(function(s){ return s.x && s.y && !s.formasi; });
+  if(candidates.length===0){
+    S.saveStatus={state:"ok",msg:"Semua stasiun berkoordinat sudah punya formasi — tidak ada yang perlu diperbarui."};
+    renderApp();
+    setTimeout(function(){ S.saveStatus=null; renderApp(); }, 3000);
+    return;
+  }
+  var updated = 0, skippedNoMatch = 0;
+  candidates.forEach(function(s){
+    var detected = detectFormasiFromCoord(parseFloat(s.x), parseFloat(s.y));
+    if(detected){ s.formasi = detected; s.formasiAuto = detected; updated++; }
+    else { skippedNoMatch++; }
+  });
+  renderApp();
+  S.saveStatus={state:"saving",msg:"Menyimpan "+updated+" stasiun yang diperbarui..."};
+  renderApp();
+
+  var toSave = candidates.filter(function(s){ return s.formasiAuto; });
+  var doneCount = 0;
+  function saveNext(){
+    if(doneCount>=toSave.length){
+      S.saveStatus={state:"ok",msg:updated+" stasiun diperbarui"+(skippedNoMatch?(", "+skippedNoMatch+" di luar cakupan peta"):"")+"."};
+      renderApp();
+      setTimeout(function(){ S.saveStatus=null; renderApp(); }, 4000);
+      return;
+    }
+    var s = toSave[doneCount];
+    var body = {action:"saveStation", slug:S.activeSlug, station:s};
+    if(!navigator.onLine){
+      s._pending = true;
+      queueAction({slug:S.activeSlug, body:body});
+      doneCount++; saveNext(); return;
+    }
+    apiPost(body).then(function(r){
+      if(!(r && r.ok)){
+        s._pending = true;
+        queueAction({slug:S.activeSlug, body:body});
+      }
+      doneCount++; saveNext();
+    });
+  }
+  saveNext();
+}
+
+
 function exportExcel(){
   if(!S.kabData || S.kabData.stations.length===0) return;
   var wb = XLSX.utils.book_new();
@@ -859,7 +906,8 @@ function renderRekapTab(){
   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">'+
     '<div><h1 style="font-size:20px;font-weight:700;margin:0;">Rekapan &amp; Laporan — '+esc(S.kabData.nama)+'</h1>'+
     '<p style="color:var(--ink-soft);font-size:13px;margin:4px 0 0;">'+S.kabData.stations.length+' stasiun · '+routePoints.length+' titik berkoordinat</p></div>'+
-    '<div style="display:flex;gap:8px;"><button id="btnExportExcel" class="btn btn-primary">Export Excel</button>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button id="btnBackfillFormasi" class="btn btn-ghost">Deteksi Formasi untuk Semua Stasiun</button>'+
+    '<button id="btnExportExcel" class="btn btn-primary">Export Excel</button>'+
     '<button id="btnPrint" class="btn btn-ghost">Cetak Laporan (PDF)</button></div>'+
   '</div>'+
   '<div class="panel" style="padding:0;overflow:hidden;margin-bottom:18px;"><div style="overflow-x:auto;"><table><thead><tr>'+
@@ -1005,6 +1053,8 @@ function attachHandlers(){
     el.oninput = function(){ updateDatumField(parseInt(this.getAttribute("data-datum-v")), "v", this.value); };
   });
 
+  var btnBackfillFormasi = document.getElementById("btnBackfillFormasi");
+  if(btnBackfillFormasi) btnBackfillFormasi.onclick = backfillFormasiAll;
   var btnExportExcel = document.getElementById("btnExportExcel");
   if(btnExportExcel) btnExportExcel.onclick = exportExcel;
   var btnPrint = document.getElementById("btnPrint");
