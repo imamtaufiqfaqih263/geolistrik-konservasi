@@ -178,6 +178,18 @@ var FORMASI_BUTON = [{v:"", label:"— Belum dipilih / di luar cakupan peta —"
   })
 );
 function getFormasi(v){ return FORMASI_BUTON.find(function(f){return f.v===v;}) || FORMASI_BUTON[0]; }
+function crossCheckFormasi(rhoAvg, formasiValue){
+  if(!formasiValue) return null;
+  var f = getFormasi(formasiValue);
+  if(!f || !f.rho) return null;
+  var inRange = rhoAvg >= f.rho[0] && rhoAvg <= f.rho[1];
+  return {
+    match: inRange,
+    text: inRange
+      ? ("Konsisten dengan "+f.label+" ("+f.litho+")")
+      : ("Di luar rentang umum "+f.label+" ("+f.rho[0]+"–"+f.rho[1]+" \u03A9\u00B7m) — indikasi pelapukan, rekahan/zona jenuh air, atau formasi berbeda; perlu verifikasi lapangan")
+  };
+}
 
 /* ---- Point-in-polygon (mendukung multi-ring: pulau & lubang) ---- */
 function pointInRing(x, y, ring){
@@ -215,6 +227,47 @@ function tryAutoDetectFormasi(){
       ? '<span style="font-size:11px;color:var(--good);font-weight:600;">✓ terdeteksi otomatis dari koordinat</span>'
       : '<span style="font-size:11px;color:var(--ink-soft);">koordinat di luar cakupan Lembar Buton — pilih manual</span>';
   }
+}
+
+/* Terapkan deteksi formasi ke SEMUA stasiun yang sudah ada & berkoordinat
+   (mis. GL.01-GL.06 yang diinput sebelum fitur ini ada), lalu sinkronkan. */
+function autoDetectAllStations(){
+  if(!S.kabData || S.kabData.stations.length===0) return;
+  var total = 0, updated = 0, promises = [];
+  S.kabData.stations.forEach(function(s){
+    if(!s.x || !s.y) return;
+    total++;
+    var lng = parseFloat(s.x), lat = parseFloat(s.y);
+    var detected = detectFormasiFromCoord(lng, lat);
+    if(detected && detected !== s.formasi){
+      s.formasi = detected;
+      s.formasiAuto = detected;
+      updated++;
+      var body = {action:"saveStation", slug:S.activeSlug, station:s};
+      if(navigator.onLine){
+        promises.push(apiPost(body).then(function(r){
+          if(!(r && r.ok)){ s._pending=true; queueAction({slug:S.activeSlug, body:body}); }
+          else { s._pending=false; }
+        }));
+      } else {
+        s._pending = true;
+        queueAction({slug:S.activeSlug, body:body});
+      }
+    }
+  });
+  if(total===0){
+    S.saveStatus={state:"err", msg:"Belum ada stasiun berkoordinat untuk dideteksi."};
+    renderApp();
+    setTimeout(function(){ S.saveStatus=null; renderApp(); }, 3000);
+    return;
+  }
+  S.saveStatus={state:"saving", msg:"Mendeteksi & menyinkronkan formasi..."};
+  renderApp();
+  Promise.all(promises).then(function(){
+    S.saveStatus={state:"ok", msg: updated+" dari "+total+" stasiun berkoordinat diperbarui formasinya"};
+    renderApp();
+    setTimeout(function(){ S.saveStatus=null; renderApp(); }, 4000);
+  });
 }
 
 function interpretLayers(datum, formasiValue){
@@ -658,10 +711,18 @@ function renderInputTab(){
 function renderStationList(){
   var n = S.kabData.stations.length;
   var last = n>0 ? S.kabData.stations[n-1].no : null;
-  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">'+
+  var statusHtml = "";
+  if(S.saveStatus){
+    var cls = S.saveStatus.state==="err"?"status-err":S.saveStatus.state==="saving"?"status-saving":"status-ok";
+    statusHtml = '<div class="'+cls+'" style="font-size:12px;font-weight:600;margin-bottom:10px;">'+esc(S.saveStatus.msg)+'</div>';
+  }
+  var html = statusHtml+'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">'+
     '<div><h1 style="font-size:20px;font-weight:700;margin:0;">'+esc(S.kabData.nama)+'</h1>'+
     '<p style="color:var(--ink-soft);font-size:13px;margin:4px 0 0;">'+n+' stasiun tercatat'+(last?(' — GL.01 s.d. '+esc(last)):'')+'</p></div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+    (n>0 ? '<button id="btnAutoDetectAll" class="btn btn-ghost">Deteksi Ulang Formasi (Semua Stasiun)</button>' : '')+
     '<button id="btnNewStation" class="btn btn-primary">+ Tambah Stasiun '+esc(padStasiun(n+1))+'</button>'+
+    '</div>'+
   '</div>';
   if(n===0){
     html += '<div class="panel empty"><div style="font-weight:600;margin-bottom:4px;">Belum ada stasiun tercatat</div>'+
@@ -677,9 +738,11 @@ function renderStationList(){
           '<div><div style="font-weight:600;font-size:14px;">'+esc(s.no)+' — '+esc(s.lokasi||"(lokasi belum diisi)")+
             (s._pending ? ' <span style="font-size:10px;font-weight:700;color:var(--warn);border:1px solid var(--warn);border-radius:4px;padding:1px 5px;">belum tersinkron</span>' : '')+
           '</div>'+
-          '<div style="font-size:12px;color:var(--ink-soft);display:flex;gap:12px;margin-top:2px;">'+
+          '<div style="font-size:12px;color:var(--ink-soft);display:flex;gap:12px;margin-top:2px;flex-wrap:wrap;">'+
             '<span>'+(s.x&&s.y?esc(s.x+", "+s.y):"belum ada koordinat")+'</span>'+
-            '<span>'+esc(s.tanggal)+'</span><span>'+filled+'/24 datum terisi</span></div></div>'+
+            '<span>'+esc(s.tanggal)+'</span><span>'+filled+'/24 datum terisi</span>'+
+            (s.formasi ? '<span>Formasi: '+esc(getFormasi(s.formasi).name)+'</span>' : '')+
+          '</div></div>'+
         '</div>'+
         '<div style="display:flex;align-items:center;gap:6px;">'+
           '<button data-del="'+esc(s.id)+'" class="btn btn-sm" style="background:none;color:var(--warn);">Hapus</button>'+
@@ -893,6 +956,8 @@ function attachHandlers(){
   if(btnNewStation) btnNewStation.onclick = startNewStation;
   var btnNewStation2 = document.getElementById("btnNewStation2");
   if(btnNewStation2) btnNewStation2.onclick = startNewStation;
+  var btnAutoDetectAll = document.getElementById("btnAutoDetectAll");
+  if(btnAutoDetectAll) btnAutoDetectAll.onclick = autoDetectAllStations;
 
   document.querySelectorAll("[data-edit]").forEach(function(el){
     el.addEventListener("click", function(ev){
